@@ -1,0 +1,67 @@
+from ss.python_utils.db.models.products.echa_hazard_group import EchaHazardGroup
+from ss.delphi.services.pfc.helpers import get_weight_from_cas
+
+""" Description: This calculator helps harmonize between RCRA and DOT Packing Group regulations for chemicals in the
+# Echa Hazard Group Table using weight logic provided at https://www.ecfr.gov/graphics/pdfs/er11my20.003.pdf .
+# The code takes in cas numbers and their respective weights in the mixture to output a list of dictionaries with the
+# packing group assigned to each cas number. Finally, a variable "pg" determines the packing group designation of the
+# overall mixture based on the presence of individual cas numbers and their assigned packing groups.
+# Parameters:
+# cas_list = dictionary of cas numbers
+# pg1_list/pg2_list/pg3_list = list of weights corresponding to the respective packing groups
+# args={"cas_number_and_weights": [{"cas": "XX-XX-X", "weight_exact": x}, {"cas": "XX-XX-Y", "weight_exact": x}]}
+# cas_dict = dictionary of characteristic cas numbers found in args, which are then key:value matched with their
+#            respective GHS keywords. The keywords are later replaced by harmonization with DOT packing groups
+# pg = a list of a single string that is either "I", "II", "III", or
+#       "This mixture does not fall under Hazard Class 8 Regulations".
+updates from Maanas 09-08-21: remove pg1>1 logic
+"""
+
+
+class NeutralCorrosiveCalculator(object):
+    OXIDIZING_IRRITANTS = ['7722-84-1']
+
+    def __init__(self, session=None):
+        self.session = session
+
+    def get_echa_master(self, cas_list=None):
+        query = self.session.query(EchaHazardGroup)
+        results = []
+        if cas_list:
+            results += query.filter(EchaHazardGroup.cas.in_(cas_list)).all()
+        return results
+
+    def calculate(self, args):
+        cas_list = args.get("cas_number_and_weights")
+
+        # adding a list of CAS that have skin_corr GHS keywords associated, but should not be evaluated for
+        # corrosion, HC8
+        cas_list = {cas.get("cas"): cas for cas in cas_list if cas.get("cas") and
+                    cas.get("cas") not in self.OXIDIZING_IRRITANTS}
+        pg1_list = []
+        pg2_list = []
+        pg3_list = []
+        pg = None
+
+        query = self.get_echa_master(list(cas_list.keys()))
+        for row in query:
+            control_1c = None
+            cas_dict = cas_list.get(row.cas)
+            initial_ghs = row.ghs_keywords
+            if control_1c and "corr_metal,skin_corr_1c" in initial_ghs:
+                pg3_list.append(get_weight_from_cas(cas_dict) or 0.1)
+            elif "skin_corr_1b" in initial_ghs:
+                pg3_list.append(get_weight_from_cas(cas_dict) or 0.1)
+            elif "skin_corr_1a" in initial_ghs:
+                pg2_list.append(get_weight_from_cas(cas_dict) or 0.1)
+            elif "skin_corr_1" in initial_ghs:
+                pg1_list.append(get_weight_from_cas(cas_dict) or 0.1)
+
+            if sum(pg1_list) >= 1:
+                if sum(pg1_list) >= 5:
+                    pg = "I"
+            elif sum(pg1_list + pg2_list) >= 5:
+                pg = "II"
+            elif sum(pg1_list + pg2_list + pg3_list) >= 5:
+                pg = "III"
+        return pg
